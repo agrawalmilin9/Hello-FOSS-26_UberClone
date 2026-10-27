@@ -6,8 +6,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..deps import get_session, require
 from ..errors import not_found
-from ..models import DriverProfile, DriverStatus, Ride, RideStatus, Role, User
-from ..schemas import DriverProfileOut, RideOut
+from ..models import (
+    ACTIVE_RIDE_STATUSES,
+    DriverProfile,
+    DriverStatus,
+    Ride,
+    RideStatus,
+    Role,
+    User,
+)
+from ..schemas import (
+    AdminMapDriverOut,
+    AdminMapOut,
+    AdminMapRideOut,
+    DriverProfileOut,
+    PlaceIn,
+    RideOut,
+)
 from ..services.rides import ride_out
 from .drivers import profile_out
 
@@ -52,3 +67,51 @@ async def list_rides(status: RideStatus | None = None, limit: int = Query(50, ge
     if status:
         query = query.where(Ride.status == status)
     return [await ride_out(session, r, admin) for r in await session.scalars(query)]
+
+@router.get("/map", response_model=AdminMapOut)
+async def admin_map(
+    _: User = Depends(admin_only),
+    session: AsyncSession = Depends(get_session),
+) -> AdminMapOut:
+    driver_query = select(DriverProfile).where(
+        DriverProfile.is_online.is_(True),
+        DriverProfile.status == DriverStatus.APPROVED,
+        DriverProfile.lat.is_not(None),
+        DriverProfile.lng.is_not(None),
+    )
+    drivers = [
+        AdminMapDriverOut(
+            user_id=driver.user_id,
+            vehicle_type=driver.vehicle_type,
+            vehicle_number=driver.vehicle_number,
+            lat=driver.lat,
+            lng=driver.lng,
+        )
+        for driver in await session.scalars(driver_query)
+    ]
+
+    ride_query = (
+        select(Ride)
+        .where(Ride.status.in_(ACTIVE_RIDE_STATUSES))
+        .order_by(Ride.requested_at.desc())
+    )
+    rides = [
+        AdminMapRideOut(
+            id=ride.id,
+            status=ride.status,
+            vehicle_type=ride.vehicle_type,
+            pickup=PlaceIn(
+                lat=ride.pickup_lat,
+                lng=ride.pickup_lng,
+            ),
+            drop=PlaceIn(
+                lat=ride.drop_lat,
+                lng=ride.drop_lng,
+            ),
+            driver_id=ride.driver_id,
+            requested_at=ride.requested_at,
+        )
+        for ride in await session.scalars(ride_query)
+    ]
+
+    return AdminMapOut(drivers=drivers, rides=rides)

@@ -14,6 +14,8 @@ from routing import (
 )
 from routing.rule_engine import CompiledModel
 from routing.telemetry import aggregate, derive_rules
+from matching import RouterEta
+from routing import MultiVehicleRouter, VehicleType
 
 NOW = datetime(2026, 9, 25, 12, tzinfo=timezone.utc)  # Friday
 BUCKETS = TimeBuckets(IST)
@@ -183,6 +185,24 @@ class EtaTests(unittest.TestCase):
         eta = route_eta_s(self.road, at_local(-4, 8).replace(minute=40), self.fit.speed_kmh)
         self.assertGreater(eta, 3600 * 1.2)   # slower than 30 km at free flow (1 h)
         self.assertLess(eta, 3600 * 1.9)      # faster than if the whole trip were at peak
+
+class BatchEtaTrafficTests(unittest.TestCase):
+    def test_batch_matches_single_route_into_rush_hour(self):
+        nodes = {str(i): (12.9 + i * 0.009, 77.5) for i in range(31)}
+        road = [EdgeMeta(f"s{i}", str(i), str(i + 1), RoadClass.PRIMARY, 1000.0,
+                         geometry=(nodes[str(i)], nodes[str(i + 1)])) for i in range(30)]
+        edges = {e.segment_id: e for e in road}
+        svc = RoutingService(LocalAStarRouter(RoadGraph(nodes, road)), edges, buckets=BUCKETS)
+        samples = [SpeedSample(e.segment_id, x.driver_id, x.trip_id, x.speed_kmh, x.observed_at)
+                   for x in synth_samples(segments={"P1"}) for e in road]
+        svc.speed_model = fit_speed_model(edges, samples, NOW, BUCKETS)
+        eta = RouterEta(MultiVehicleRouter({VehicleType.CAR: svc}))
+
+        at = at_local(-4, 8).replace(minute=40)      # 30 km trip that runs into 09:00 rush hour
+        batch = eta.pickup_etas_s({"d": nodes["0"]}, nodes["30"], VehicleType.CAR, at)
+        single = eta.pickup_eta_s(nodes["0"], nodes["30"], VehicleType.CAR, at)
+        self.assertAlmostEqual(batch["d"], single, delta=1.0)
+        self.assertGreater(single, 3600 * 1.2)       # sanity check: rush hour really slowed it
 
 
 if __name__ == "__main__":

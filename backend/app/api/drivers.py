@@ -72,7 +72,8 @@ async def post_location(body: LocationIn, user: User = Depends(driver_only), ctx
 
 
 @router.get("/offer")
-async def current_offer(user: User = Depends(driver_only), session: AsyncSession = Depends(get_session)) -> dict | None:
+async def current_offer(user: User = Depends(driver_only), ctx: AppContext = Depends(get_ctx),
+                        session: AsyncSession = Depends(get_session)) -> dict | None:
     """The ride this driver is currently pinged for (apps also get it as a `ride:ping` event)."""
     offer = await session.scalar(select(RideOffer).where(
         RideOffer.driver_id == user.id, RideOffer.status == OfferStatus.PINGED)
@@ -80,4 +81,16 @@ async def current_offer(user: User = Depends(driver_only), session: AsyncSession
     if offer is None:
         return None
     ride = await session.get(Ride, offer.ride_id)
-    return {**ride_summary(ride), "offered_at": offer.created_at.isoformat()}
+    profile = await session.get(DriverProfile, user.id)
+    dist_m, eta_s = None, None
+    if profile and profile.lat is not None and profile.lng is not None:
+        dist_m, eta_s = ctx.routes.pickup_estimate(
+            (profile.lat, profile.lng), (ride.pickup_lat, ride.pickup_lng),
+            VehicleType(ride.vehicle_type), offer.created_at,
+        )
+    return {
+        **ride_summary(ride),
+        "offered_at": offer.created_at.isoformat(),
+        "pickup_distance_m": dist_m,
+        "pickup_eta_s": eta_s,
+    }

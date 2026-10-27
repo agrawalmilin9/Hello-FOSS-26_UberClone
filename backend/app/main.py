@@ -38,7 +38,11 @@ def create_app(settings: Settings | None = None, routes: RouteService | None = N
         if routes is None and settings.roads_path:
             # Loading a city's road network takes ~20-30 s; done at startup, not at import.
             ctx.routes = await asyncio.to_thread(load_route_service, settings.roads_path)
-        if settings.is_dev:
+        # Dev applies migrations at startup; tests use create_all (faster, fresh database each time).
+        # Production runs `alembic upgrade head` as a deploy step, so several instances never race on it.
+        if settings.env == "dev":
+            await ctx.db.migrate()
+        elif settings.env == "test":
             await ctx.db.create_all()
         if settings.run_matching_loop:
             dispatcher.start()

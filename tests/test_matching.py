@@ -169,6 +169,32 @@ class RoutingIntegrationTests(unittest.TestCase):
         cycle(self._drivers(), riders, self.config, eta=self.eta)
         self.assertEqual(riders[0]["driverIds"], ["EAST"])
 
+    def test_batch_eta_matches_individual_route_eta(self):
+        drivers = {
+            "NEAR": RIVER["N"],
+            "EAST": RIVER["E"],
+        }
+        rider_position = RIVER["R"]
+
+        batch = self.eta.pickup_etas_s(
+            drivers, rider_position, VehicleType.CAR, NOW
+        )
+
+        self.assertEqual(set(batch), set(drivers))
+
+        for driver_id, position in drivers.items():
+            individual = self.eta.pickup_eta_s(
+                position, rider_position, VehicleType.CAR, NOW
+            )
+            self.assertIsNotNone(batch[driver_id])
+            self.assertAlmostEqual(batch[driver_id], individual, delta=1.0)
+
+    def test_driver_outside_map_gets_none(self):
+        batch = self.eta.pickup_etas_s({"LOST": (13.5, 77.59), "EAST": RIVER["E"]},
+                                       RIVER["R"], VehicleType.CAR, NOW)
+        self.assertIsNone(batch["LOST"])
+        self.assertIsNotNone(batch["EAST"])
+
     def test_conflict_resolved_by_road_eta(self):
         riders = [rider("R1", *RIVER["R"], "driver_pinged", driverIds=["NEAR", "EAST"])]
         result = cycle(self._drivers("accepted", "R1"), riders, self.config, eta=self.eta)

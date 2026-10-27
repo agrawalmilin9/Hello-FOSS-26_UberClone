@@ -140,11 +140,20 @@ async def _live_offer(session: AsyncSession, ride_id: str, driver_id: str) -> Ri
         RideOffer.status.in_((OfferStatus.PINGED, OfferStatus.ACCEPTED))))
 
 
+async def _locked_ride(session: AsyncSession, ride_id: str) -> Ride | None:
+    """The ride, row-locked until commit (PostgreSQL; SQLite ignores it).
+
+    The dispatch cycle holds the same lock while it matches, so a rider cancelling or a driver answering
+    a ping waits for the cycle to commit (and sees its result) instead of overwriting it.
+    """
+    return await session.get(Ride, ride_id, with_for_update=True, populate_existing=True)
+
+
 async def respond_to_offer(session: AsyncSession, ctx: AppContext, ride_id: str, driver: User, accept: bool) -> RideOffer:
+    ride = await _locked_ride(session, ride_id)          # lock first, then read the offer as of now
     offer = await _live_offer(session, ride_id, driver.id)
-    if offer is None or offer.status is not OfferStatus.PINGED:
+    if ride is None or offer is None or offer.status is not OfferStatus.PINGED:
         raise conflict("this ride is no longer offered to you")
-    ride = await session.get(Ride, ride_id)
     expired = (_now() - offer.created_at).total_seconds() > ctx.settings.ping_timeout_seconds
     if ride.status is not RideStatus.SEARCHING or expired:
         raise conflict("this ride is no longer offered to you")
@@ -203,7 +212,9 @@ async def complete_ride(session: AsyncSession, ctx: AppContext, ride_id: str, dr
 # --------------------------------------------------------------------------- #
 
 async def cancel_ride(session: AsyncSession, ctx: AppContext, ride_id: str, user: User, reason: str | None) -> Ride:
-    ride = await session.get(Ride, ride_id)
+    # Locked: otherwise a dispatch cycle that read the ride as searching could assign a driver to it
+    # after the rider's cancel commits (or the cancel could miss the driver who was just assigned).
+    ride = await _locked_ride(session, ride_id)
     if ride is None or user.id not in (ride.rider_id, ride.driver_id):
         raise not_found("ride")
     now = _now()

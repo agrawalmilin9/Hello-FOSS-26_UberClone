@@ -7,19 +7,57 @@ FastAPI service for riders, drivers and admins. It runs the ride lifecycle, the 
 ```bash
 pip install -r backend/requirements.txt -r requirements.txt
 uvicorn backend.app.main:app --reload          # from the repo root; API docs at http://localhost:8000/docs
+alembic upgrade head                           # schema migrations (dev startup runs this for you)
 python -m pytest                                # all tests (routing, matching, backend)
 ```
 
 | Env var | Default | Notes |
 |---|---|---|
 | `ROADS_PATH` | `data/roads.pkl` if present | Road network for routing; `ROADS_PATH=none` turns it off |
-| `APP_ENV` | `dev` | `dev` / `test`: fixed OTP, tables auto-created, `/dev/dispatch/tick` enabled. Anything else = production rules |
-| `DATABASE_URL` | `sqlite+aiosqlite:///./uberclone.db` | Production: `postgresql+asyncpg://...` |
+| `APP_ENV` | `dev` | `dev` / `test`: fixed OTP, `/dev/dispatch/tick` enabled. `dev` applies migrations at startup, `test` creates tables directly. Anything else = production rules (run `alembic upgrade head` yourself) |
+| `DATABASE_URL` | `sqlite+aiosqlite:///./uberclone.db` | Production: `postgresql+asyncpg://user:pass@host/db`. Alembic uses it too |
+| `TEST_DATABASE_URL` | — | Tests only: run `backend/tests` on this PostgreSQL database instead of SQLite. **It is wiped by every test** |
 | `JWT_SECRET` | dev value | **Required** outside dev / test (startup fails without it) |
 | `DEV_OTP` | `123456` | Dev only; returned as `dev_code` so the apps can log in without SMS |
 | `ADMIN_PHONES` | — | Comma-separated E.164 numbers that become admins on first login |
 | `AUTO_APPROVE_DRIVERS` | `true` | Set `false` to require admin approval |
 | `RUN_MATCHING_LOOP` | `true` | The dispatch loop (every 3 s) |
+
+## Changing the database
+
+The schema lives in `backend/app/models.py`; every change to it ships with an Alembic migration in `backend/migrations/versions/`. Run these from the repo root.
+
+**I changed a model, now what?**
+
+1. Edit `backend/app/models.py` (add the column, table or index).
+2. Generate a migration: `alembic revision --autogenerate -m "add pickup note to rides"`
+3. Read the new file in `backend/migrations/versions/`. Autogenerate is a draft: check every line, and fill in data changes (a default for existing rows, a rename that it saw as drop + add) yourself.
+4. Apply it: `alembic upgrade head`, or just restart the backend (dev startup runs it).
+5. Run the tests. `test_migrations.py` fails if the models and the migrations disagree, so a forgotten migration is caught there.
+6. Commit the migration together with the model change.
+
+| Task | Command |
+|---|---|
+| Apply everything | `alembic upgrade head` |
+| Where am I? | `alembic current` / `alembic history` |
+| Undo the last migration | `alembic downgrade -1` |
+| See the SQL without running it | `alembic upgrade head --sql` |
+
+- **New columns on existing tables** must be nullable or have a `server_default`, or the migration fails on a database that already has rows.
+- **SQLite** can't alter columns in place; migrations use batch mode there (set up in `env.py`), which rebuilds the table.
+- **Two migrations from the same parent** (two PRs merged in parallel) leave Alembic with two heads. Rebase, then point your migration's `down_revision` at the newest one (`alembic heads` lists them).
+- **A database from before migrations** (created by the old `create_all`): delete `uberclone.db` once. The backend tells you this at startup.
+- **Production:** run `alembic upgrade head` as a deploy step before starting the new version; the app doesn't migrate itself outside dev, so several instances never race on it.
+
+**PostgreSQL locally:**
+
+```bash
+createdb uberclone && createdb uberclone_test
+DATABASE_URL=postgresql+asyncpg://localhost/uberclone alembic upgrade head
+TEST_DATABASE_URL=postgresql+asyncpg://localhost/uberclone_test python -m pytest backend/tests
+```
+
+**Row locks.** The dispatch cycle selects searching rides with `SELECT … FOR UPDATE SKIP LOCKED`, and cancelling or answering a ping locks the ride first (`with_for_update`). So a ride is never assigned twice or assigned after the rider cancelled, even with several backend instances. SQLite ignores the locks; one process with one dispatch loop doesn't need them.
 
 ## Road data (routes that follow the roads)
 
@@ -73,7 +111,7 @@ Drivers send `{"type": "location", "lat", "lng", "heading", "speed_kmh"}` over t
 
 | Gap | Phase |
 |---|---|
-| Alembic migrations, PostgreSQL row locks on assignment, Redis for multi-instance WebSockets | 6 |
+| Redis for multi-instance WebSockets | 6 |
 | Real SMS (MSG91 with DLT templates), rate limiting on OTP requests | 6 |
 | Metered final fare, cancellation fees, Razorpay | 4 |
 | Push notifications (driver pings when the app is in the background) | 3 |

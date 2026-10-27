@@ -86,6 +86,24 @@ class TurnModel:
     costs: TurnCosts
     restrictions: TurnRestrictions = NO_RESTRICTIONS
     left_hand_traffic: bool = LEFT_HAND_TRAFFIC
+    _cache: dict[tuple[str, str], float] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+        compare=False,
+        hash=False,
+    )
 
     def cost_s(self, inbound: EdgeMeta, outbound: EdgeMeta) -> float:
-        return turn_cost_s(inbound, outbound, self.costs, self.restrictions, self.left_hand_traffic)
+        key = (inbound.segment_id, outbound.segment_id)
+        cached = self._cache.get(key)
+        if cached is None:
+            cached = turn_cost_s(
+                inbound,
+                outbound,
+                self.costs,
+                self.restrictions,
+                self.left_hand_traffic,
+            )
+            self._cache[key] = cached
+        return cached

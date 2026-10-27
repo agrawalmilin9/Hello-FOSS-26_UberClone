@@ -1,24 +1,56 @@
 from __future__ import annotations
 
+import asyncio
 import itertools
+import os
 import random
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from backend.app.config import Settings
+from backend.app.db import Database
 from backend.app.main import create_app
 
 _phones = itertools.count(9000000001)
 
+# Run the backend tests against PostgreSQL instead of SQLite:
+#   TEST_DATABASE_URL=postgresql+asyncpg://user:pass@localhost/uberclone_test python -m pytest backend/tests
+# Every test wipes that database, so point it at a throwaway one, never at your dev database
+# (that's why this isn't DATABASE_URL).
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "")
+on_postgres = TEST_DATABASE_URL.startswith("postgresql")
+
+
+def empty_database(url: str) -> None:
+    """Drop every app table (and Alembic's version table) so the next test starts from nothing."""
+    async def run() -> None:
+        db = Database(url)
+        try:
+            await db.drop_all()
+            async with db.engine.begin() as conn:
+                await conn.execute(text("DROP TABLE IF EXISTS alembic_version"))
+        finally:
+            await db.dispose()
+    asyncio.run(run())
+
+
+def database_url(tmp_path, n: int = 0) -> str:
+    """A fresh, empty database for one test: a new SQLite file, or the emptied PostgreSQL test database."""
+    if TEST_DATABASE_URL:
+        empty_database(TEST_DATABASE_URL)
+        return TEST_DATABASE_URL
+    return f"sqlite+aiosqlite:///{tmp_path}/test{n}.db"
+
 
 @pytest.fixture
 def make_client(tmp_path):
-    """App on a fresh SQLite file, with the background matching loop off (tests tick it)."""
+    """App on a fresh database, with the background matching loop off (tests tick it)."""
     clients = []
 
     def factory(**overrides) -> TestClient:
-        settings = Settings(env="test", database_url=f"sqlite+aiosqlite:///{tmp_path}/test{len(clients)}.db",
+        settings = Settings(env="test", database_url=database_url(tmp_path, len(clients)),
                             run_matching_loop=False, roads_path=None, **overrides)
         app = create_app(settings)
         app.state.dispatcher.rng = random.Random(7)

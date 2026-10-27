@@ -10,7 +10,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from matching import EtaProvider, StraightLineEta
+from matching import EtaProvider, RouterEta, StraightLineEta
 from matching.geo import LatLng, haversine_km
 from routing import MultiVehicleRouter, VehicleType
 
@@ -31,14 +31,22 @@ class RouteEstimate:
 class RouteService:
     def __init__(self, router: MultiVehicleRouter | None = None):
         self.router = router
-        # Matching ranks up to 10 nearby drivers per rider every 3 s, which the pure-Python router
-        # can't do in time on a city graph, so pickup ETAs stay straight-line here. With GraphHopper
-        # backends (milliseconds per route) this can become matching.RouterEta(router).
-        self.pickup_eta: EtaProvider = StraightLineEta(STRAIGHT_LINE_SPEED_KMH, DETOUR_FACTOR)
+        self.pickup_eta: EtaProvider = (
+            RouterEta(router) if router is not None
+            else StraightLineEta(STRAIGHT_LINE_SPEED_KMH, DETOUR_FACTOR)
+        )
 
     @property
     def has_roads(self) -> bool:
         return self.router is not None
+
+    def pickup_estimate(self, driver: LatLng, pickup: LatLng, vehicle: VehicleType,
+                        at: datetime | None = None) -> tuple[int, int]:
+        """(distance_m, duration_s) from driver to pickup point."""
+        km = haversine_km(driver, pickup) * DETOUR_FACTOR
+        eta = self.pickup_eta.pickup_eta_s(driver, pickup, vehicle, at or datetime.now(timezone.utc))
+        duration_s = int(round(eta)) if eta is not None else int(round(km / STRAIGHT_LINE_SPEED_KMH * 3600))
+        return int(round(km * 1000)), duration_s
 
     def estimate(self, origin: LatLng, dest: LatLng, vehicle: VehicleType,
                  depart_at: datetime | None = None) -> RouteEstimate | None:
