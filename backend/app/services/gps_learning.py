@@ -1,6 +1,6 @@
-
 """Convert stored driver GPS records into candidate road-learning telemetry."""
 
+import asyncio
 import json
 from datetime import datetime
 
@@ -140,6 +140,7 @@ async def learn_ride_speeds(
     vehicle: VehicleType = VehicleType.CAR,
     *,
     phase: str = "trip",
+    index=None
 ) -> list[SpeedSample]:
     """Extract candidate speed samples from a completed ride phase."""
     pings = await load_phase_pings(
@@ -149,12 +150,14 @@ async def learn_ride_speeds(
     if not pings:
         return []
 
-    return extract_speed_samples(
+    return await asyncio.to_thread(
+        extract_speed_samples,
         pings_to_observations(pings),
         edges,
         driver_id,
         ride_id,
         vehicle,
+        index=index,
     )
 
 
@@ -262,6 +265,7 @@ def validated_ride_exposures(
     driver_id: str,
     ride_id: str,
     vehicle: VehicleType = VehicleType.CAR,
+    index=None
 ) -> list[SegmentExposure]:
     """Verify followed roads and conservatively detect avoided roads."""
     if len(observations) < 3 or not planned_segments:
@@ -284,7 +288,7 @@ def validated_ride_exposures(
     ):
         return []
 
-    actual = match_gps_sequence(points, edges)
+    actual = match_gps_sequence(points, edges, index=index)
 
     if not actual or actual[0] != planned_segments[0]:
         return []
@@ -328,7 +332,7 @@ def validated_ride_exposures(
         return result
 
     groups = group_observations_by_segment(
-        points, edges
+        points, edges, index=index
     )
 
     # Reject avoidance evidence if GPS tracking was broken.

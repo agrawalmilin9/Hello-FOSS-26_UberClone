@@ -59,22 +59,59 @@ def distance_to_segment_m(
         ay + fraction * dy,
     )
 
+class SegmentIndex:
+    """Grid index: finds roads near a point without scanning every edge."""
+
+    def __init__(self, edges: dict[str, EdgeMeta], cell_deg: float = 0.001):
+        self.cell_deg = cell_deg
+        self._cells: dict[tuple[int, int], list[str]] = {}
+
+        for segment_id, edge in edges.items():
+            geometry = edge.geometry
+            if len(geometry) < 2:
+                continue
+            cells: set[tuple[int, int]] = set()
+            for a, b in zip(geometry, geometry[1:]):
+                r0, r1 = sorted((self._cell(a[0]), self._cell(b[0])))
+                c0, c1 = sorted((self._cell(a[1]), self._cell(b[1])))
+                cells.update(
+                    (r, c)
+                    for r in range(r0, r1 + 1)
+                    for c in range(c0, c1 + 1)
+                )
+            for cell in cells:
+                self._cells.setdefault(cell, []).append(segment_id)
+
+    def _cell(self, degrees: float) -> int:
+        return math.floor(degrees / self.cell_deg)
+
+    def candidates(
+        self, point: tuple[float, float], radius_m: float
+    ) -> set[str]:
+        lat, lng = point
+        pad_lat = radius_m * 1.1 / 111_195.0
+        pad_lng = pad_lat / max(math.cos(math.radians(lat)), 0.01)
+        found: set[str] = set()
+        for r in range(self._cell(lat - pad_lat), self._cell(lat + pad_lat) + 1):
+            for c in range(self._cell(lng - pad_lng), self._cell(lng + pad_lng) + 1):
+                found.update(self._cells.get((r, c), ()))
+        return found
 
 def nearest_segment(
     point: GPSObservation | tuple[float, float],
     edges: dict[str, EdgeMeta],
     max_distance_m: float = 30.0,
     ambiguity_m: float = 3.0,
+    index: SegmentIndex | None = None,
 ) -> str | None:
     """Find the closest road, rejecting ambiguous parallel roads."""
     location = coordinates(point)
+    if index is None:
+        index = SegmentIndex(edges)
     candidates = []
 
-    for segment_id, edge in edges.items():
-        geometry = edge.geometry
-
-        if len(geometry) < 2:
-            continue
+    for segment_id in index.candidates(location, max_distance_m):
+        geometry = edges[segment_id].geometry
 
         distance = min(
             distance_to_segment_m(location, a, b)
@@ -112,13 +149,15 @@ def match_gps_sequence(
     points: list[GPSObservation | tuple[float, float]],
     edges: dict[str, EdgeMeta],
     max_distance_m: float = 30.0,
+    index: SegmentIndex | None = None,
 ) -> list[str]:
     """Return the latest uninterrupted sequence of road matches."""
+    index = index or SegmentIndex(edges)
     segments: list[str] = []
 
     for point in points:
         segment_id = nearest_segment(
-            point, edges, max_distance_m
+            point, edges, max_distance_m, index=index
         )
 
         if segment_id is None:
@@ -248,8 +287,12 @@ def speed_sample_from_observations(
         if distance > 0 and distance / elapsed * 3.6 > 130:
             return None
 
+    observed_distance_m = (
+        progress[-1] - progress[0]
+    ) * edge.distance_m
+
     speed = traversal_speed_kmh(
-        edge.distance_m,
+        observed_distance_m,
         ordered[0].recorded_at,
         ordered[-1].recorded_at,
     )
@@ -272,8 +315,10 @@ def group_observations_by_segment(
     edges: dict[str, EdgeMeta],
     max_distance_m: float = 30.0,
     max_gap_s: float = 60.0,
+    index: SegmentIndex | None = None,
 ) -> list[tuple[str | None, list[GPSObservation]]]:
     """Group consecutive road observations, preserving tracking breaks."""
+    index = index or SegmentIndex(edges)
     groups: list[
         tuple[str | None, list[GPSObservation]]
     ] = []
@@ -297,6 +342,7 @@ def group_observations_by_segment(
             observation,
             edges,
             max_distance_m,
+            index=index,
         )
 
         if segment_id is None:
@@ -311,19 +357,19 @@ def group_observations_by_segment(
 
     return groups
 
-
 def extract_speed_samples(
     observations: list[GPSObservation],
     edges: dict[str, EdgeMeta],
     driver_id: str,
     trip_id: str,
     vehicle: VehicleType = VehicleType.CAR,
+    index: SegmentIndex | None = None,
 ) -> list[SpeedSample]:
     """Extract candidate speed samples from uninterrupted GPS groups."""
     samples: list[SpeedSample] = []
 
     groups = group_observations_by_segment(
-        observations, edges
+        observations, edges, index=index
     )
 
     for segment_id, points in groups:

@@ -30,7 +30,7 @@ Follow the code around you:
 | Apps (`mobile/`) | TypeScript strict mode; screens in `src/app/` (Expo Router), everything else in `src/lib/` and `src/components/`; plain logic (no React) goes in `src/lib/` so it can be unit-tested; install packages with `npx expo install <package>` |
 | Money and units | Fares in **paise** (integers), distances in **metres**, durations in **seconds**, times in **UTC** (convert to IST only for display or time-of-day logic) |
 
-**Changing the database:** there are no migrations yet ([issue 020](docs/issues/020-database-migrations-postgres.md)). If you add a column, say so in your pull request; everyone needs to delete their local `uberclone.db`.
+**Changing the database:** add an Alembic migration with your model change; see [Changing the database](docs/BACKEND.md#changing-the-database). Nobody has to delete their database.
 
 ## 4. Test it
 

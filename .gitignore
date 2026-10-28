@@ -8,3 +8,4 @@ e2e/report/
 .venv/
 venv/
 .DS_Store
+.vscode

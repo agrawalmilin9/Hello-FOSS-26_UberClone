@@ -229,7 +229,7 @@ Only one city is loaded at a time. To run without road data (straight-line estim
 All local data lives in one file: users, rides and ratings.
 1. Stop the backend.
 2. Delete `uberclone.db` in the repo folder (macOS / Linux: `rm uberclone.db`).
-3. Start the backend again; the tables are created automatically.
+3. Start the backend again; it creates the tables automatically (it applies the migrations).
 
 On the phone, **Log out** clears the saved login.
 

@@ -9,6 +9,9 @@ from routing import (
 )
 from routing.graph import haversine_m
 from routing.rule_engine import CompiledModel, RuleValidationError, validate
+from routing.cost import edge_cost
+from dataclasses import replace
+from routing.turns import TurnRestrictions
 
 NOW = datetime(2026, 9, 25, 12, tzinfo=timezone.utc)
 
@@ -40,6 +43,24 @@ def service():
     return RoutingService(LocalAStarRouter(RoadGraph(NODES, EDGES)), EDGE_MAP)
 
 
+def reverse_total_cost(svc, start, end):
+    """Best first-segment cost + remaining cost, from one reverse search."""
+    model = svc.model_for_request(NOW, NOW)
+    graph = svc.backend.graph
+    dst, remaining, _ = svc.backend.reverse_costs(end, model, svc.turns)
+    compiled = CompiledModel(model)
+    best = float("inf")
+    for edge in graph.out[graph.nearest_node(start, "start")]:
+        if edge.segment_id not in remaining:
+            continue
+        ev = compiled.evaluate(edge)
+        cost = edge_cost(edge.distance_m, ev.speed_kmh, ev.priority, model.distance_influence)
+        if edge.to_node != dst:
+            cost += edge.end_delay_s
+        best = min(best, cost + remaining[edge.segment_id])
+    return best
+
+
 def speed_samples(seg, speed, drivers, per_driver, days):
     return [SpeedSample(seg, f"d{d}", f"t{d}-{i}", speed, NOW - timedelta(days=i % days, hours=1))
             for d in range(drivers) for i in range(per_driver)]
@@ -61,6 +82,57 @@ class BaselineTests(unittest.TestCase):
         r = service().route(NODES["A"], NODES["C"], NOW)
         self.assertEqual(r.segments, ["AB", "BC"])
         self.assertAlmostEqual(r.explanation[0].priority, 1.0)
+
+    def test_reverse_costs_match_forward_routes_for_segments(self):
+        svc = service()
+        model = svc.model_for_request(NOW, NOW)
+        graph = svc.backend.graph
+
+        dst, remaining, next_segment = svc.backend.reverse_costs(
+            NODES["C"], model, svc.turns
+        )
+        self.assertEqual(dst, "C")
+
+        evaluations = CompiledModel(model)
+        candidates = []
+        for edge in graph.out["A"]:
+            if edge.segment_id not in remaining:
+                continue
+            ev = evaluations.evaluate(edge)
+            cost = edge_cost(
+                edge.distance_m, ev.speed_kmh, ev.priority,
+                model.distance_influence,
+            )
+            if edge.to_node != dst:
+                cost += edge.end_delay_s
+            candidates.append((cost + remaining[edge.segment_id], edge.segment_id))
+
+        reverse_cost, first_segment = min(candidates)
+        forward = svc.route(NODES["A"], NODES["C"], NOW)
+
+        self.assertIsNotNone(forward)
+        self.assertAlmostEqual(reverse_cost, forward.cost)
+        self.assertEqual(first_segment, forward.segments[0])
+
+    def test_reverse_cost_matches_forward_with_middle_delay(self):
+        edges = [replace(e, end_delay_s=30.0) if e.segment_id == "AB" else e for e in EDGES]
+        svc = RoutingService(LocalAStarRouter(RoadGraph(NODES, edges)), {e.segment_id: e for e in edges})
+        forward = svc.route(NODES["A"], NODES["C"], NOW)
+        self.assertAlmostEqual(reverse_total_cost(svc, NODES["A"], NODES["C"]), forward.cost)
+
+    def test_reverse_cost_matches_forward_with_banned_turn(self):
+        svc = RoutingService(LocalAStarRouter(RoadGraph(NODES, EDGES)), EDGE_MAP,
+                             turn_restrictions=TurnRestrictions(banned=frozenset({("AB", "BC")})))
+        forward = svc.route(NODES["A"], NODES["C"], NOW)
+        self.assertEqual(forward.segments, ["AR", "RC"])
+        self.assertAlmostEqual(reverse_total_cost(svc, NODES["A"], NODES["C"]), forward.cost)
+
+    def test_reverse_costs_early_stop_matches_full_search(self):
+        svc = service()
+        model = svc.model_for_request(NOW, NOW)
+        _, full, _ = svc.backend.reverse_costs(NODES["C"], model, svc.turns)
+        _, partial, _ = svc.backend.reverse_costs(NODES["C"], model, svc.turns, groups=[["AB"]])
+        self.assertAlmostEqual(partial["AB"], full["AB"])
 
 
 class TelemetryTests(unittest.TestCase):

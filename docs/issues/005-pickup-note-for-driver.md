@@ -16,7 +16,7 @@ In Indian cities a map pin is often not enough: riders say "society gate 2", "op
 - `backend/app/services/rides.py`: `create_ride`, and `ride_summary` (the data sent with ride events).
 - `mobile/src/app/rider/index.tsx` (the `choose` step), `mobile/src/app/driver/index.tsx`, `mobile/src/app/driver/trip/[id].tsx`.
 
-**Note:** there are no database migrations yet (see issue 020). After adding a column, delete your local `uberclone.db`.
+**Note:** a new column needs an Alembic migration; see [Changing the database](../BACKEND.md#changing-the-database).
 
 ## Done when
 - [ ] The note is optional and limited to 120 characters (422 if longer).

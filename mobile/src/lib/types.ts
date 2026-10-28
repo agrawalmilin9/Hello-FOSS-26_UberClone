@@ -115,6 +115,8 @@ export interface RideSummary {
 export interface Offer extends RideSummary {
   expires_in_s?: number;
   offered_at?: string;
+  pickup_distance_m?: number;
+  pickup_eta_s?: number;
 }
 
 export type ServerEvent =

@@ -1,4 +1,3 @@
-
 from datetime import datetime, timedelta, timezone
 
 from routing import EdgeMeta, RoadClass
@@ -12,6 +11,7 @@ from routing.map_matching import (
     segment_progress,
     speed_sample_from_observations,
     traversal_speed_kmh,
+    SegmentIndex,
 )
 
 
@@ -138,7 +138,7 @@ def test_speed_sample_from_observations():
     assert sample.segment_id == "AB"
     assert sample.driver_id == "driver-1"
     assert sample.trip_id == "trip-1"
-    assert sample.speed_kmh == 18.0
+    assert round(sample.speed_kmh, 2) == 17.28
 
 
 def test_reject_unreliable_speed_samples():
@@ -228,7 +228,7 @@ def test_extract_speed_samples():
 
     assert len(samples) == 1
     assert samples[0].segment_id == "AB"
-    assert samples[0].speed_kmh == 18.0
+    assert round(samples[0].speed_kmh, 2) == 17.28
 
 
 def test_match_accepts_gps_observation_objects():
@@ -304,3 +304,38 @@ def test_curved_segment_does_not_generate_speed_sample():
     assert speed_sample_from_observations(
         observations, curved, "driver-1", "trip-1"
     ) is None
+
+def test_speed_uses_distance_actually_observed():
+    # Covers 8%..92% of the 100 m road in 20 s: 84 m / 20 s = 15.12 km/h.
+    # Dividing the full 100 m by 20 s would give 18.0 km/h (too high).
+    observations = [
+        point(77.59008, 0),
+        point(77.59050, 10),
+        point(77.59092, 20),
+    ]
+
+    sample = speed_sample_from_observations(
+        observations, roads()["AB"], "driver-1", "trip-1"
+    )
+
+    assert sample is not None
+    assert abs(sample.speed_kmh - 15.12) < 0.05
+    assert sample.speed_kmh < 18.0
+
+def test_segment_index_returns_nearby_roads_only():
+    index = SegmentIndex(roads())
+
+    assert "AB" in index.candidates((12.9700, 77.5905), 30)
+    assert {"AB", "BC"} <= index.candidates((12.9700, 77.5910), 30)
+    assert index.candidates((13.0000, 77.6000), 30) == set()
+
+
+def test_index_candidates_are_filtered_by_exact_distance():
+    edges = roads()
+    index = SegmentIndex(edges)
+
+    # BC may be a grid candidate here, but it is more than 30 m away,
+    # so the exact distance check must still pick AB.
+    assert nearest_segment(
+        (12.97001, 77.5905), edges, index=index
+    ) == "AB"

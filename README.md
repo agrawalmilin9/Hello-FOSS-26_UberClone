@@ -132,7 +132,7 @@ Pick one and contribute. Each issue explains why it matters, what to do, which f
 **Issues that build on each other:**
 - **013** reuses the place-lookup provider from **012**, and **014** can share its "recent places" list with **012**.
 - **016**, **023** and **028** use driver GPS breadcrumbs; **028** needs **023**.
-- **005**, **016** and **017** add database columns, which will need migrations once **020** lands.
+- **005**, **016** and **017** add database columns, each with an Alembic migration ([how](docs/BACKEND.md#changing-the-database)).
 - **027** works best after **020**.
 
 **Ideas without an issue yet:** in-app chat or masked calling, scheduled rides, promo codes, driver document verification, more than one city, ride receipts, online payments (UPI / cards in test mode). Open a discussion first.

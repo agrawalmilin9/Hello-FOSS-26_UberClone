@@ -39,8 +39,107 @@ class LocalAStarRouter:
     Waits and turns are plain seconds: they are never scaled by the road's priority.
     """
 
+    def reverse_costs(
+        self, destination, model, turns=None, groups=None, compiled=None
+    ):
+        """Find minimum remaining routing cost from each segment to destination.
+
+        groups: optional list of lists of segment ids, one list per driver (the segments
+        leaving the driver's node). The search stops once every driver's best first
+        segment is final.
+        """
+        graph = self.graph
+        if compiled is None:
+            compiled = CompiledModel(model)
+
+        dst = graph.nearest_node(destination, "end")
+        if dst is None:
+            return None, {}, {}
+
+        incoming = self._incoming
+        costs = {}
+
+        def segment_cost(edge):
+            cached_cost = costs.get(edge.segment_id)
+            if cached_cost is not None:
+                return cached_cost
+
+            speed_kmh, priority = compiled.evaluate_costs(edge)
+
+            cost = edge_cost(
+                edge.distance_m,
+                speed_kmh,
+                priority,
+                model.distance_influence,
+            )
+            if edge.to_node != dst:
+                cost += edge.end_delay_s
+
+            costs[edge.segment_id] = cost
+            return cost
+
+        remaining = {}
+        next_segment = {}
+        heap = []
+        tie = itertools.count()
+        use_groups = bool(groups)
+        group_of = {}
+        best_total = []
+        worst = math.inf
+        for gi, segs in enumerate(groups or ()):
+            best_total.append(math.inf)
+            for s in segs:
+                group_of.setdefault(s, []).append(gi)
+
+        for edge in incoming.get(dst, ()):
+            cost = segment_cost(edge)
+            if not math.isinf(cost):
+                remaining[edge.segment_id] = 0.0
+                next_segment[edge.segment_id] = None
+                heapq.heappush(heap, (0.0, next(tie), edge.segment_id))
+
+        while heap:
+            cost, _, current_id = heapq.heappop(heap)
+            if cost != remaining.get(current_id):
+                continue
+
+            if use_groups:
+                for gi in group_of.get(current_id, ()):
+                    total = cost + segment_cost(graph.edges[current_id])
+                    if total < best_total[gi]:
+                        best_total[gi] = total
+                        worst = max(best_total)
+                if worst <= cost:
+                    break
+
+            current = graph.edges[current_id]
+            current_cost = segment_cost(current)
+            if math.isinf(current_cost):
+                continue
+
+            for previous in incoming.get(current.from_node, ()):
+                turn_cost = turns.cost_s(previous, current) if turns else 0.0
+                if math.isinf(turn_cost):
+                    continue
+
+                candidate = cost + turn_cost + current_cost
+                previous_id = previous.segment_id
+
+                if candidate < remaining.get(previous_id, math.inf):
+                    remaining[previous_id] = candidate
+                    next_segment[previous_id] = current_id
+                    heapq.heappush(heap, (candidate, next(tie), previous_id))
+
+        return dst, remaining, next_segment
+
     def __init__(self, graph: RoadGraph):
         self.graph = graph
+
+        # Build once; reuse for every reverse search.
+        incoming = {}
+        for edge in graph.edges.values():
+            incoming.setdefault(edge.to_node, []).append(edge)
+        self._incoming = incoming
 
     def route(self, start: LatLon, end: LatLon, model: CustomModel,
               turns: TurnModel | None = None) -> RouteResult | None:
@@ -259,4 +358,3 @@ def _check_expected_speeds(base: CustomModel, edges: dict[str, EdgeMeta]) -> Non
     if mismatched:
         raise ValueError(f"{len(mismatched)} edges (e.g. {mismatched[0]}) have a speed_kmh that differs from "
                          f"the baseline's; build it with models.expected_speed_kmh()")
-

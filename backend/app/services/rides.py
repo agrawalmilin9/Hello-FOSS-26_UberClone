@@ -141,11 +141,20 @@ async def _live_offer(session: AsyncSession, ride_id: str, driver_id: str) -> Ri
         RideOffer.status.in_((OfferStatus.PINGED, OfferStatus.ACCEPTED))))
 
 
+async def _locked_ride(session: AsyncSession, ride_id: str) -> Ride | None:
+    """The ride, row-locked until commit (PostgreSQL; SQLite ignores it).
+
+    The dispatch cycle holds the same lock while it matches, so a rider cancelling or a driver answering
+    a ping waits for the cycle to commit (and sees its result) instead of overwriting it.
+    """
+    return await session.get(Ride, ride_id, with_for_update=True, populate_existing=True)
+
+
 async def respond_to_offer(session: AsyncSession, ctx: AppContext, ride_id: str, driver: User, accept: bool) -> RideOffer:
+    ride = await _locked_ride(session, ride_id)          # lock first, then read the offer as of now
     offer = await _live_offer(session, ride_id, driver.id)
-    if offer is None or offer.status is not OfferStatus.PINGED:
+    if ride is None or offer is None or offer.status is not OfferStatus.PINGED:
         raise conflict("this ride is no longer offered to you")
-    ride = await session.get(Ride, ride_id)
     expired = (_now() - offer.created_at).total_seconds() > ctx.settings.ping_timeout_seconds
     if ride.status is not RideStatus.SEARCHING or expired:
         raise conflict("this ride is no longer offered to you")
@@ -183,20 +192,22 @@ async def start_ride(session: AsyncSession, ctx: AppContext, ride_id: str, drive
     now = _now()
     ride.status, ride.started_at = RideStatus.IN_PROGRESS, now
 
-    estimate = ctx.routes.estimate(
-        (ride.pickup_lat, ride.pickup_lng),
-        (ride.drop_lat, ride.drop_lng),
-        VehicleType(ride.vehicle_type),
-        depart_at=now,
-    )
+    # Planned routes are only needed for GPS road learning.
+    if ctx.settings.run_gps_learning_loop:
+        estimate = ctx.routes.estimate(
+            (ride.pickup_lat, ride.pickup_lng),
+            (ride.drop_lat, ride.drop_lng),
+            VehicleType(ride.vehicle_type),
+            depart_at=now,
+        )
 
-    if estimate is not None and estimate.segment_ids:
-        session.add(PlannedRoute(
-            ride_id=ride.id,
-            driver_id=driver.id,
-            phase="trip",
-            segment_ids=json.dumps(estimate.segment_ids),
-        ))
+        if estimate is not None and estimate.segment_ids:
+            session.add(PlannedRoute(
+                ride_id=ride.id,
+                driver_id=driver.id,
+                phase="trip",
+                segment_ids=json.dumps(estimate.segment_ids),
+            ))
     await session.commit()
     await ctx.hub.send(ride.rider_id, "ride:started", ride_summary(ride))
     return ride
@@ -220,7 +231,9 @@ async def complete_ride(session: AsyncSession, ctx: AppContext, ride_id: str, dr
 # --------------------------------------------------------------------------- #
 
 async def cancel_ride(session: AsyncSession, ctx: AppContext, ride_id: str, user: User, reason: str | None) -> Ride:
-    ride = await session.get(Ride, ride_id)
+    # Locked: otherwise a dispatch cycle that read the ride as searching could assign a driver to it
+    # after the rider's cancel commits (or the cancel could miss the driver who was just assigned).
+    ride = await _locked_ride(session, ride_id)
     if ride is None or user.id not in (ride.rider_id, ride.driver_id):
         raise not_found("ride")
     now = _now()

@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import dataclasses
 
 from .conftest import driver, rider, tick
 from backend.app.services.routes import RouteService
@@ -57,6 +58,10 @@ def test_route_estimate_includes_segments():
 def test_planned_routes_saved_on_assignment_and_start(client, tmp_path):
     # Use our small road network instead of the default no-road setup.
     client.app.state.ctx.routes = make_test_routes()
+
+    client.app.state.ctx.settings = dataclasses.replace(
+        client.app.state.ctx.settings, run_gps_learning_loop=True
+    )
 
     passenger = rider(client)
     assigned_driver = driver(client, *NODES["A"])

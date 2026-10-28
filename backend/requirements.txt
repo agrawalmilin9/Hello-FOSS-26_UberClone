@@ -1,6 +1,7 @@
 fastapi>=0.115
 uvicorn[standard]>=0.30
-sqlalchemy>=2.0
+sqlalchemy[asyncio]>=2.0   # [asyncio] pulls in greenlet, required by the async engine
+alembic>=1.16        # database migrations (backend/migrations)
 aiosqlite>=0.20      # dev / tests
 asyncpg>=0.29        # PostgreSQL in staging / production
 pyjwt>=2.8

@@ -176,9 +176,24 @@ def assign_pings(drivers: dict[str, Record], riders: dict[str, Record], eta: Eta
                   if i in usable and i not in excluded and _vehicle(drivers[i]) is vehicle]
         if eta is not None:
             nearby = nearby[:config.eta_candidates]
-            costed = [(i, eta.pickup_eta_s(_position(drivers[i]), _position(rider), vehicle, now)) for i, _ in nearby]
-            nearby = [(i, s) for i, s in costed if s is not None
-                      and (config.max_pickup_eta_s is None or s <= config.max_pickup_eta_s)]
+
+            batch_eta = getattr(eta, "pickup_etas_s", None)
+            if batch_eta is not None:
+                positions = {i: _position(drivers[i]) for i, _ in nearby}
+                costed = batch_eta(positions, _position(rider), vehicle, now)
+                nearby = [(i, costed.get(i)) for i, _ in nearby]
+            else:
+                nearby = [
+                    (i, eta.pickup_eta_s(_position(drivers[i]), _position(rider), vehicle, now))
+                    for i, _ in nearby
+                ]
+
+            nearby = [
+                (i, seconds) for i, seconds in nearby
+                if seconds is not None
+                and (config.max_pickup_eta_s is None or seconds <= config.max_pickup_eta_s)
+            ]
+
         if not nearby:
             stats["riders_without_driver"] = stats.get("riders_without_driver", 0) + 1
             continue

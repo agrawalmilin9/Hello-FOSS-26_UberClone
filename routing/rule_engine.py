@@ -138,6 +138,7 @@ class CompiledModel:
                 for seg in segments:
                     self._zones_of[seg].add(zone_id)
         self._calming: dict[Target, list[Statement]] = defaultdict(list)
+        self._base_matches = {}
         for s in model.statements():
             c = s.condition
             if isinstance(c, Always):
@@ -164,33 +165,73 @@ class CompiledModel:
         return any(zone.contains(p) for p in edge.geometry)
 
     def _matching(self, target: Target, edge: EdgeMeta) -> list[Statement]:
-        seg = [s for s in self._by_segment.get((target, edge.segment_id), ())
-               if s.condition.road_class in (None, edge.road_class)]
+        cache_key = (
+            target,
+            edge.road_class,
+            edge.road_access,
+            edge.toll,
+            edge.traffic_calming,
+        )
+
+        base_matches = self._base_matches.get(cache_key)
+        if base_matches is None:
+            matches = []
+            matches.extend(self._always.get(target, ()))
+            matches.extend(self._by_class.get((target, edge.road_class), ()))
+            matches.extend(self._by_attr.get((target, edge.road_access), ()))
+            matches.extend(self._by_attr.get((target, edge.toll), ()))
+
+            if edge.traffic_calming:
+                matches.extend(self._calming.get(target, ()))
+
+            base_matches = tuple(matches)
+            self._base_matches[cache_key] = base_matches
+
+        matches = list(base_matches)
+
+        for statement in self._by_segment.get((target, edge.segment_id), ()):
+            if statement.condition.road_class in (None, edge.road_class):
+                matches.append(statement)
+
         area_rules = self._by_area.get(target, ())
         if area_rules and self._zones_of is not None and edge.segment_id not in self._zones_of:
-            area_rules = ()                              # fast path: edge is in no zone
-        area = [s for s in area_rules if self._in_area(s.condition.zone_id, edge)]
-        return [*self._always.get(target, ()), *self._by_class.get((target, edge.road_class), ()),
-                *self._by_attr.get((target, edge.road_access), ()), *self._by_attr.get((target, edge.toll), ()),
-                *(self._calming.get(target, ()) if edge.traffic_calming else ()), *seg, *area]
+            area_rules = ()
 
-    def evaluate(self, edge: EdgeMeta) -> EdgeEvaluation:
-        applied: list[str] = []
+        for statement in area_rules:
+            if self._in_area(statement.condition.zone_id, edge):
+                matches.append(statement)
+
+        return matches
+
+    def _evaluate_values(
+        self, edge: EdgeMeta, collect_applied: bool
+    ) -> tuple[float, float, tuple[str, ...]]:
+        applied = [] if collect_applied else None
 
         speed = math.inf
         for s in self._matching(Target.SPEED, edge):
             value = self._resolve_speed(s.value, edge)
             speed = min(speed, value) if s.op is Op.LIMIT_TO else speed * value
-            applied.append(s.rule_id)
+            if applied is not None:
+                applied.append(s.rule_id)
         if math.isinf(speed):
             speed = edge.speed_kmh
 
         priority = 1.0
         for s in self._matching(Target.PRIORITY, edge):
             priority = min(priority, s.value) if s.op is Op.LIMIT_TO else priority * s.value
-            applied.append(s.rule_id)
+            if applied is not None:
+                applied.append(s.rule_id)
 
-        return EdgeEvaluation(edge.segment_id, speed, priority, tuple(applied))
+        return speed, priority, tuple(applied) if applied is not None else ()
+
+    def evaluate(self, edge: EdgeMeta) -> EdgeEvaluation:
+        speed, priority, applied = self._evaluate_values(edge, True)
+        return EdgeEvaluation(edge.segment_id, speed, priority, applied)
+
+    def evaluate_costs(self, edge: EdgeMeta) -> tuple[float, float]:
+        speed, priority, _ = self._evaluate_values(edge, False)
+        return speed, priority
 
     @staticmethod
     def _resolve_speed(value: float | str, edge: EdgeMeta) -> float:

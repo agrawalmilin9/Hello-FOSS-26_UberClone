@@ -128,6 +128,11 @@ export default function DriverHome() {
               <Title style={{ fontSize: 22 }}>New ride · {formatFare(state.offer.fare_paise)}</Title>
               <Text style={styles.countdown}>{secondsLeft(state, now)}s</Text>
             </Row>
+            {state.offer.pickup_distance_m != null && state.offer.pickup_eta_s != null && (
+              <Body style={{ fontWeight: '600' }}>
+                📍 {formatDistance(state.offer.pickup_distance_m)} away · {formatDuration(state.offer.pickup_eta_s)}
+              </Body>
+            )}
             <Body>🟢 {shortAddress(state.offer.pickup.lat, state.offer.pickup.lng, state.offer.pickup.address)}</Body>
             <Body>🔴 {shortAddress(state.offer.drop.lat, state.offer.drop.lng, state.offer.drop.address)}</Body>
             <Body muted>Trip {formatDistance(state.offer.distance_m)} · {formatDuration(state.offer.duration_s)} · Cash</Body>

@@ -164,4 +164,27 @@ class RatingIn(BaseModel):
     comment: str | None = Field(default=None, max_length=500)
 
 
+class AdminMapDriverOut(BaseModel):
+    user_id: str
+    vehicle_type: VehicleType
+    vehicle_number: str
+    lat: float
+    lng: float
+
+
+class AdminMapRideOut(BaseModel):
+    id: str
+    status: RideStatus
+    vehicle_type: VehicleType
+    pickup: PlaceIn
+    drop: PlaceIn
+    driver_id: str | None
+    requested_at: datetime
+
+
+class AdminMapOut(BaseModel):
+    drivers: list[AdminMapDriverOut]
+    rides: list[AdminMapRideOut]
+
+
 TokenOut.model_rebuild()

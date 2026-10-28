@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from matching import MatchingConfig, run_cycle
+from routing import VehicleType
 
 from ..context import AppContext
 from ..models import (
@@ -77,7 +78,11 @@ class Dispatcher:
 
     async def _cycle(self, session: AsyncSession, now: datetime, events: list) -> dict[str, int]:
         s = self.ctx.settings
-        searching = list(await session.scalars(select(Ride).where(Ride.status == RideStatus.SEARCHING)))
+        # Lock the searching rides until this cycle commits (PostgreSQL; SQLite ignores it). A ride being
+        # cancelled right now, or matched by another backend instance, is skipped rather than waited for,
+        # so a ride can never be assigned twice or assigned after the rider cancelled it.
+        searching = list(await session.scalars(select(Ride).where(Ride.status == RideStatus.SEARCHING)
+                                               .with_for_update(skip_locked=True)))
         gave_up = await self._give_up_stale(session, searching, now, events)
         rides = {r.id: r for r in searching if r.status is RideStatus.SEARCHING}
         offers = list(await session.scalars(select(RideOffer).where(
@@ -141,35 +146,38 @@ class Dispatcher:
             ride, winner = rides[r["id"]], r["driverId"]
             ride.status, ride.driver_id, ride.assigned_at = RideStatus.DRIVER_ASSIGNED, winner, now
             profile = profiles[winner]
-            estimate = self.ctx.routes.estimate(
-                (profile.lat, profile.lng),
-                (ride.pickup_lat, ride.pickup_lng),
-                VehicleType(ride.vehicle_type),
-                depart_at=now,
-            )
 
-            planned = await session.scalar(
-                select(PlannedRoute).where(
-                    PlannedRoute.ride_id == ride.id,
-                    PlannedRoute.phase == "approach",
+            # Planned routes are only needed for GPS road learning.
+            if self.ctx.settings.run_gps_learning_loop:
+                estimate = self.ctx.routes.estimate(
+                    (profile.lat, profile.lng),
+                    (ride.pickup_lat, ride.pickup_lng),
+                    VehicleType(ride.vehicle_type),
+                    depart_at=now,
                 )
-            )
 
-            if estimate is not None and estimate.segment_ids:
-                if planned is None:
-                    planned = PlannedRoute(
-                        ride_id=ride.id,
-                        driver_id=winner,
-                        phase="approach",
-                        segment_ids=json.dumps(estimate.segment_ids),
+                planned = await session.scalar(
+                    select(PlannedRoute).where(
+                        PlannedRoute.ride_id == ride.id,
+                        PlannedRoute.phase == "approach",
                     )
-                    session.add(planned)
-                else:
-                    planned.driver_id = winner
-                    planned.segment_ids = json.dumps(estimate.segment_ids)
-                    planned.created_at = now
-            elif planned is not None:
-                await session.delete(planned)
+                )
+
+                if estimate is not None and estimate.segment_ids:
+                    if planned is None:
+                        planned = PlannedRoute(
+                            ride_id=ride.id,
+                            driver_id=winner,
+                            phase="approach",
+                            segment_ids=json.dumps(estimate.segment_ids),
+                        )
+                        session.add(planned)
+                    else:
+                        planned.driver_id = winner
+                        planned.segment_ids = json.dumps(estimate.segment_ids)
+                        planned.created_at = now
+                elif planned is not None:
+                    await session.delete(planned)
 
             for o in offers:
                 if o.ride_id != ride.id or o.status not in LIVE:
@@ -200,8 +208,17 @@ class Dispatcher:
             if d["status"] == "pinged" and (old is None or old.ride_id != d["riderId"] or old.status not in LIVE):
                 ride = rides[d["riderId"]]
                 session.add(RideOffer(ride_id=ride.id, driver_id=driver_id, created_at=now))
-                events.append((driver_id, "ride:ping", {**ride_summary(ride),
-                                                        "expires_in_s": self.config.ping_timeout_s}))
+                p = profiles[driver_id]
+                dist_m, eta_s = self.ctx.routes.pickup_estimate(
+                    (p.lat, p.lng), (ride.pickup_lat, ride.pickup_lng),
+                    VehicleType(ride.vehicle_type), now,
+                )
+                events.append((driver_id, "ride:ping", {
+                    **ride_summary(ride),
+                    "expires_in_s": self.config.ping_timeout_s,
+                    "pickup_distance_m": dist_m,
+                    "pickup_eta_s": eta_s,
+                }))
 
         return {**result.stats, "no_drivers": gave_up}
 

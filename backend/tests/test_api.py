@@ -36,8 +36,13 @@ def test_full_ride_lifecycle(client):
     tick(client)
     assert near.events("ride:ping") and far.events("ride:ping")
     assert not auto.events("ride:ping")                 # wrong vehicle type
-    assert near.get("/drivers/me/offer").json()["ride_id"] == ride["id"]
-    assert "pin" not in near.events("ride:ping")[0]["data"]
+    near_ping = near.events("ride:ping")[0]["data"]
+    far_ping = far.events("ride:ping")[0]["data"]
+    assert "pin" not in near_ping
+    assert near_ping["pickup_distance_m"] > 0
+    assert near_ping["pickup_eta_s"] > 0
+    assert near_ping["pickup_distance_m"] < far_ping["pickup_distance_m"]
+    assert near_ping["pickup_eta_s"] < far_ping["pickup_eta_s"]
 
     assert far.post(f"/rides/{ride['id']}/accept").status_code == 202
     assert near.post(f"/rides/{ride['id']}/accept").status_code == 202
@@ -204,6 +209,24 @@ def test_admin_approves_pending_driver(make_client):
     assert [p["user_id"] for p in pending] == [d.id]
     assert admin.post(f"/admin/drivers/{d.id}/approve").json()["status"] == "approved"
     assert d.post("/drivers/me/online", {"online": True}).status_code == 200
+
+def test_admin_map_is_admin_only_and_lists_online_drivers(make_client):
+    client = make_client(admin_phones=("+919999999999",))
+    admin = Actor(client, "rider", phone="+919999999999")
+    r = rider(client)
+    d = driver(client, 12.9726, 77.5946)
+
+    assert client.get("/admin/map").status_code == 401      # no token
+    assert r.get("/admin/map").status_code == 403           # normal user
+
+    data = admin.get("/admin/map").json()
+    assert [x["user_id"] for x in data["drivers"]] == [d.id]
+    assert data["drivers"][0]["lat"] == 12.9726
+    assert data["rides"] == []
+
+    ride = book(r)
+    data = admin.get("/admin/map").json()
+    assert [x["id"] for x in data["rides"]] == [ride["id"]]
 
 
 # --------------------------------------------------------------------------- #
